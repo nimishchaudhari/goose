@@ -1,85 +1,84 @@
-name: Goose
+name: Goose Auto-Fix Issues
 
 on:
-pull_request:
-   types: [opened, synchronize, reopened, labeled]
+  issues:
+    types: [labeled, opened]
+  issue_comment:
+    types: [created]
 
 permissions:
-contents: write
-pull-requests: write
-issues: write
+  contents: write
+  pull-requests: write
+  issues: write
 
 env:
-PROVIDER_API_KEY: ${{ secrets.REPLACE_WITH_PROVIDER_API_KEY }}
-PR_NUMBER: ${{ github.event.pull_request.number }}
-GH_TOKEN: ${{ github.token }}
+  OPENAI_API_KEY: ${{ secrets.REPLACE_WITH_PROVIDER_API_KEY }}
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
-goose-comment:
-   name: Goose Comment
-   runs-on: ubuntu-latest
-   steps:
-      - name: Check out repository
+  goose-fix:
+    # Run when issue is labeled with 'goose' OR when someone comments '@goose-ai'
+    if: |
+      (github.event_name == 'issues' && github.event.label.name == 'goose') ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@goose-ai'))
+    
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
-           fetch-depth: 0
+          fetch-depth: 0
 
-      - name: Gather PR information
+      # Install your project dependencies (customize for your stack)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: npm install
+
+      # Install Goose CLI
+      - name: Install Goose
         run: |
-           {
-           echo "# Files Changed"
-           gh pr view $PR_NUMBER --json files \
-              -q '.files[] | "* " + .path + " (" + (.additions|tostring) + " additions, " + (.deletions|tostring) + " deletions)"'
-           echo ""
-           echo "# Changes Summary"
-           gh pr diff $PR_NUMBER
-           } > changes.txt
+          mkdir -p /home/runner/.local/bin
+          curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh \
+            | CONFIGURE=false GOOSE_BIN_DIR=/home/runner/.local/bin bash
+          echo "/home/runner/.local/bin" >> $GITHUB_PATH
 
-      - name: Install Goose CLI
+      # Run Goose to fix the issue
+      - name: Run Goose to fix issue
         run: |
-           mkdir -p /home/runner/.local/bin
-           curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh \
-           | CONFIGURE=false GOOSE_BIN_DIR=/home/runner/.local/bin bash
-           echo "/home/runner/.local/bin" >> $GITHUB_PATH
+          # Extract issue/PR info
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_BODY="${{ github.event.issue.body }}"
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          
+          # Create a task description for Goose
+          TASK="Fix GitHub issue #${ISSUE_NUMBER}:
+          Title: ${ISSUE_TITLE}
+          
+          Description:
+          ${ISSUE_BODY}"
+          
+          # Run Goose with the task
+          goose session start << 'EOF'
+          $TASK
+          EOF
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-      - name: Configure Goose
-        run: |
-           mkdir -p ~/.config/goose
-           cat <<EOF > ~/.config/goose/config.yaml
-           GOOSE_PROVIDER: "https://swap.jetpack-ai.net/v1"
-           GOOSE_MODEL: "Qwen3-Coder-30B-A3B-Instruct-IQ4_NL-128k"
-           keyring: false
-           EOF
-
-      - name: Create instructions for Goose
-        run: |
-           cat <<EOF > instructions.txt
-           Create a summary of the changes provided. Don't provide any session or logging details.
-           The summary for each file should be brief and structured as:
-           <filename/path (wrapped in backticks)>
-              - dot points of changes
-           You don't need any extensions, don't mention extensions at all.
-           The changes to summarise are:
-           $(cat changes.txt)
-           EOF
-
-      - name: Test
-        run: cat instructions.txt
-
-      - name: Run Goose and filter output
-        run: |
-           goose run --instructions instructions.txt | \
-           # Remove ANSI color codes
-           sed -E 's/\x1B\[[0-9;]*[mK]//g' | \
-           # Remove session/logging lines
-           grep -v "logging to /home/runner/.config/goose/sessions/" | \
-           grep -v "^starting session" | \
-           grep -v "^Closing session" | \
-           # Trim trailing whitespace
-           sed 's/[[:space:]]*$//' \
-           > pr_comment.txt
-
-      - name: Post comment to PR
-        run: |
-           cat -A pr_comment.txt
-           gh pr comment $PR_NUMBER --body-file pr_comment.txt
+      # Create/update PR with changes
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          commit-message: "fix: resolve issue #${{ github.event.issue.number }}"
+          title: "Auto-fix: ${{ github.event.issue.title }}"
+          body: |
+            This PR was automatically generated by Goose AI to fix #${{ github.event.issue.number }}
+            
+            Please review the changes and merge if they look correct.
+          branch: goose/fix-${{ github.event.issue.number }}
+          delete-branch: true
+          labels: "goose-generated"
