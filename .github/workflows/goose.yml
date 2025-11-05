@@ -55,10 +55,12 @@ jobs:
           cat <<EOF > ~/.config/goose/config.yaml
           GOOSE_PROVIDER: openai
           GOOSE_MODEL: ${{ env.OPENAI_MODEL }}
-          OPENAI_API_KEY: ${{ env.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ env.OPENAI_BASE_URL }}
           keyring: false
           EOF
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
       
       - name: Prepare context for issues
         if: github.event_name == 'issues' || (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
@@ -120,6 +122,10 @@ jobs:
             grep -v "^Closing session" | \
             sed 's/[[:space:]]*$//' \
             > goose_output.txt
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
       
       - name: Post comment to issue/PR
         if: github.event_name == 'issue_comment' || (github.event_name == 'issues' && github.event.action == 'labeled')
