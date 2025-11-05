@@ -355,13 +355,15 @@ jobs:
         run: |
           echo "Running Goose with task type: ${{ steps.task_type.outputs.type }}"
           
-          goose run --instructions instructions.txt | \
-            sed -E 's/\x1B\[[0-9;]*[mK]//g' | \
-            grep -v "logging to /home/runner/.config/goose/sessions/" | \
-            grep -v "^starting session" | \
-            grep -v "^Closing session" | \
-            sed 's/[[:space:]]*$//' \
-            > goose_output.txt
+          goose run --instructions instructions.txt \
+          --with-extension "GITHUB_PERSONAL_ACCESS_TOKEN=${{ secrets.GITHUB_TOKEN }} npx -y @modelcontextprotocol/server-github" | \
+          sed -E 's/\x1B\[[0-9;]*[mK]//g' | \
+          grep -v "logging to /home/runner/.config/goose/sessions/" | \
+          grep -v "^starting session" | \
+          grep -v "^Closing session" | \
+          sed 's/[[:space:]]*$//' \
+          > goose_output.txt
+
           
           # Add header
           {
