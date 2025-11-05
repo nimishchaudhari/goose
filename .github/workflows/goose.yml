@@ -117,12 +117,12 @@ jobs:
           gh pr create \
             --title "fix: automated solution for issue #${{ steps.task.outputs.issue_number }}" \
             --body "🦆 **Goose Agent** attempted to fix issue #${{ steps.task.outputs.issue_number }}
-
-## Changes Made
-$(cat clean_output.txt)
-
----
-Triggered by: @${{ github.actor }}" \
+          
+          ## Changes Made
+          $(cat clean_output.txt)
+        
+          ---
+          Triggered by: @${{ github.actor }}" \
             --base main \
             --head ${{ steps.commit.outputs.branch }}
       
@@ -133,20 +133,20 @@ Triggered by: @${{ github.actor }}" \
         run: |
           if [ "${{ steps.commit.outputs.changes }}" == "true" ]; then
             COMMENT="✅ **Goose completed the task!**
-
-I've created a PR with my changes. Please review.
-
-<details>
-<summary>Output</summary>
-
-\`\`\`
-$(cat clean_output.txt)
-\`\`\`
-</details>"
-          else
-            COMMENT="ℹ️ **Goose analyzed the task**
-
-$(cat clean_output.txt)"
+          
+          I've created a PR with my changes. Please review.
+          
+          <details>
+          <summary>Output</summary>
+          
+          \`\`\`
+          $(cat clean_output.txt)
+          \`\`\`
+          </details>"
+                    else
+                      COMMENT="ℹ️ **Goose analyzed the task**
+          
+          $(cat clean_output.txt)"
           fi
           
           gh issue comment ${{ steps.task.outputs.issue_number }} --body "$COMMENT"
