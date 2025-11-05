@@ -1,0 +1,9 @@
+Can you please create a hello world program in python and create a PR?
+
+ENVIRONMENT CONTEXT:
+- You are in a GitHub Actions runner
+- Repository is already checked out at current directory
+- Repository: nimishchaudhari/goose
+- Use file system tools to read and modify files
+- DO NOT try to clone repos or create PRs yourself
+- After you finish, GitHub Actions will commit your changes
