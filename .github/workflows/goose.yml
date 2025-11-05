@@ -1,422 +1,153 @@
+#Simplified Goose Agent
 name: Goose Agent
+
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-  issues:
-    types: [opened, labeled]
   issue_comment:
     types: [created]
-  workflow_dispatch:
-    inputs:
-      task:
-        description: 'Task for Goose to execute'
-        required: true
-        type: string
-      pr_number:
-        description: 'PR number (optional)'
-        required: false
-        type: string
-      issue_number:
-        description: 'Issue number (optional)'
-        required: false
-        type: string
+  issues:
+    types: [labeled]
 
 permissions:
   contents: write
   pull-requests: write
   issues: write
 
-env:
-  # Configure your LLM provider
-  PROVIDER_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-  OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
-  OPENAI_HOST:  ${{ secrets.OPENAI_HOST }}
-  GOOSE_PROVIDER: openai
-  GOOSE_MODEL: ${{ secrets.OPENAI_MODEL }}
-  GOOSE_DISABLE_KEYRING: 1
-  
-  # GitHub context
-  PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
-  ISSUE_NUMBER: ${{ github.event.issue.number || github.event.inputs.issue_number }}
-  GH_TOKEN: ${{ github.token }}
-  REPO_NAME: ${{ github.repository }}
-  
-  # Custom endpoints
-  CUSTOM_API_ENDPOINT: ${{ secrets.OPENAI_HOST }}
-
 jobs:
-  goose-agent:
-    name: Goose Agent
+  goose:
+    # Run when: 1) issue labeled "goose", or 2) comment starts with "/goose"
+    if: |
+      (github.event.label.name == 'goose') ||
+      (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/goose'))
+    
     runs-on: ubuntu-latest
     
     steps:
-      - name: Check if should run
-        id: should_run
-        run: |
-          # For issue comments, only run if comment starts with /goose
-          if [ "${{ github.event_name }}" == "issue_comment" ]; then
-            COMMENT_BODY="${{ github.event.comment.body }}"
-            if [[ "$COMMENT_BODY" == /goose* ]]; then
-              echo "run=true" >> $GITHUB_OUTPUT
-              echo "Running because comment starts with /goose"
-            else
-              echo "run=false" >> $GITHUB_OUTPUT
-              echo "Skipping - comment doesn't start with /goose"
-            fi
-          else
-            echo "run=true" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Exit if should not run
-        if: steps.should_run.outputs.run == 'false'
-        run: exit 0
-      
-      - name: Check out repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
       
-      - name: Install Goose CLI
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install Goose
         run: |
-          mkdir -p /home/runner/.local/bin
           curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh \
-            | CONFIGURE=false GOOSE_BIN_DIR=/home/runner/.local/bin bash
-          echo "/home/runner/.local/bin" >> $GITHUB_PATH
+            | CONFIGURE=false GOOSE_BIN_DIR=/usr/local/bin bash
       
       - name: Configure Goose
         run: |
           mkdir -p ~/.config/goose
           cat <<EOF > ~/.config/goose/config.yaml
-          GOOSE_PROVIDER: ${{ env.GOOSE_PROVIDER }}
-          GOOSE_MODEL: ${{ env.GOOSE_MODEL }}
+          GOOSE_PROVIDER: openai
+          GOOSE_MODEL: ${{ secrets.OPENAI_MODEL }}
           keyring: false
           EOF
-          
-          if [ ! -z "${{ env.CUSTOM_API_ENDPOINT }}" ]; then
-            echo "GOOSE_API_ENDPOINT: ${{ env.CUSTOM_API_ENDPOINT }}" >> ~/.config/goose/config.yaml
-          fi
       
-      - name: Determine context type
-        id: context_type
+      - name: Get task from comment or issue
+        id: task
         run: |
           if [ "${{ github.event_name }}" == "issue_comment" ]; then
-            if [ "${{ github.event.issue.pull_request }}" != "" ]; then
-              echo "context=pr_comment" >> $GITHUB_OUTPUT
-              echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
-            else
-              echo "context=issue_comment" >> $GITHUB_OUTPUT
-              echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
-            fi
-          elif [ "${{ github.event_name }}" == "issues" ]; then
-            echo "context=issue" >> $GITHUB_OUTPUT
-            echo "number=${{ env.ISSUE_NUMBER }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" == "pull_request" ]; then
-            echo "context=pr" >> $GITHUB_OUTPUT
-            echo "number=${{ env.PR_NUMBER }}" >> $GITHUB_OUTPUT
+            # Extract task from /goose command
+            TASK=$(echo "${{ github.event.comment.body }}" | sed 's/^\/goose //')
+            ISSUE_NUM=${{ github.event.issue.number }}
           else
-            echo "context=workflow_dispatch" >> $GITHUB_OUTPUT
+            # Use issue title and body
+            TASK="${{ github.event.issue.title }}: ${{ github.event.issue.body }}"
+            ISSUE_NUM=${{ github.event.issue.number }}
+          fi
+          
+          echo "task<<EOF" >> $GITHUB_OUTPUT
+          echo "$TASK" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "issue_number=$ISSUE_NUM" >> $GITHUB_OUTPUT
+      
+      - name: Run Goose
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_HOST: ${{ secrets.OPENAI_HOST }}
+        run: |
+          cat <<EOF > instructions.txt
+          ${{ steps.task.outputs.task }}
+          
+          ENVIRONMENT CONTEXT:
+          - You are in a GitHub Actions runner
+          - Repository is already checked out at current directory
+          - Repository: ${{ github.repository }}
+          - Use file system tools to read and modify files
+          - DO NOT try to clone repos or create PRs yourself
+          - After you finish, GitHub Actions will commit your changes
+          EOF
+          
+          goose run --instructions instructions.txt > output.txt 2>&1 || true
+          
+          # Clean up output
+          sed -E 's/\x1B\[[0-9;]*[mK]//g' output.txt | \
+            grep -v "logging to" | \
+            grep -v "session" > clean_output.txt
+      
+      - name: Commit changes if any
+        id: commit
+        run: |
+          git config user.name "goose-bot"
+          git config user.email "goose-bot@users.noreply.github.com"
+          
+          if [[ -n $(git status --porcelain) ]]; then
+            BRANCH="goose-fix-${{ steps.task.outputs.issue_number }}-$(date +%s)"
+            git checkout -b $BRANCH
+            git add .
+            git commit -m "fix: address issue #${{ steps.task.outputs.issue_number }}
+
+Automated fix by Goose Agent
+Triggered by: @${{ github.actor }}"
+            git push origin $BRANCH
+            
+            echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+            echo "changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "changes=false" >> $GITHUB_OUTPUT
           fi
       
-      - name: Determine task type
-        id: task_type
+      - name: Create PR if changes exist
+        if: steps.commit.outputs.changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          CONTEXT="${{ steps.context_type.outputs.context }}"
-          
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "type=custom" >> $GITHUB_OUTPUT
-            echo "Custom task triggered"
-          elif [ "$CONTEXT" == "issue_comment" ] || [ "$CONTEXT" == "pr_comment" ]; then
-            # Parse command from comment
-            COMMENT_BODY="${{ github.event.comment.body }}"
-            
-            if [[ "$COMMENT_BODY" == "/goose review"* ]]; then
-              echo "type=review" >> $GITHUB_OUTPUT
-            elif [[ "$COMMENT_BODY" == "/goose test"* ]]; then
-              echo "type=test" >> $GITHUB_OUTPUT
-            elif [[ "$COMMENT_BODY" == "/goose docs"* ]]; then
-              echo "type=docs" >> $GITHUB_OUTPUT
-            elif [[ "$COMMENT_BODY" == "/goose fix"* ]]; then
-              echo "type=fix" >> $GITHUB_OUTPUT
-            elif [[ "$COMMENT_BODY" == "/goose help"* ]]; then
-              echo "type=help" >> $GITHUB_OUTPUT
-            else
-              # Custom task from comment
-              echo "type=custom" >> $GITHUB_OUTPUT
-            fi
-          elif [ "$CONTEXT" == "issue" ]; then
-            # Check issue labels
-            LABELS=$(gh issue view ${{ steps.context_type.outputs.number }} --json labels -q '.labels[].name' || echo "")
-            
-            if echo "$LABELS" | grep -q "goose:task"; then
-              echo "type=issue_task" >> $GITHUB_OUTPUT
-            else
-              echo "type=skip" >> $GITHUB_OUTPUT
-            fi
-          elif [ "$CONTEXT" == "pr" ]; then
-            # Check PR labels
-            LABELS=$(gh pr view ${{ steps.context_type.outputs.number }} --json labels -q '.labels[].name' || echo "")
-            
-            if echo "$LABELS" | grep -q "goose:review"; then
-              echo "type=review" >> $GITHUB_OUTPUT
-            elif echo "$LABELS" | grep -q "goose:test"; then
-              echo "type=test" >> $GITHUB_OUTPUT
-            elif echo "$LABELS" | grep -q "goose:docs"; then
-              echo "type=docs" >> $GITHUB_OUTPUT
-            elif echo "$LABELS" | grep -q "goose:fix"; then
-              echo "type=fix" >> $GITHUB_OUTPUT
-            else
-              echo "type=review" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "type=review" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Exit if should skip
-        if: steps.task_type.outputs.type == 'skip'
-        run: exit 0
-      
-      - name: Gather PR information
-        if: steps.context_type.outputs.context == 'pr' || steps.context_type.outputs.context == 'pr_comment'
-        run: |
-          PR_NUM=${{ steps.context_type.outputs.number }}
-          {
-            echo "# Pull Request #${PR_NUM}"
-            echo ""
-            echo "## PR Details"
-            gh pr view ${PR_NUM} --json title,body,author \
-              -q '"**Title:** " + .title + "\n**Author:** " + .author.login + "\n**Description:**\n" + .body'
-            echo ""
-            echo "## Files Changed"
-            gh pr view ${PR_NUM} --json files \
-              -q '.files[] | "* " + .path + " (" + (.additions|tostring) + " additions, " + (.deletions|tostring) + " deletions)"'
-            echo ""
-            echo "## Diff"
-            gh pr diff ${PR_NUM}
-          } > context.txt
-      
-      - name: Gather Issue information
-        if: steps.context_type.outputs.context == 'issue' || steps.context_type.outputs.context == 'issue_comment'
-        run: |
-          ISSUE_NUM=${{ steps.context_type.outputs.number }}
-          {
-            echo "# Issue #${ISSUE_NUM}"
-            echo ""
-            echo "## Issue Details"
-            gh issue view ${ISSUE_NUM} --json title,body,author,labels \
-              -q '"**Title:** " + .title + "\n**Author:** " + .author.login + "\n**Labels:** " + ([.labels[].name] | join(", ")) + "\n\n**Description:**\n" + .body'
-            echo ""
-            echo "## Comments"
-            gh issue view ${ISSUE_NUM} --json comments \
-              -q '.comments[] | "**" + .author.login + "** (" + .createdAt + "):\n" + .body + "\n---\n"'
-          } > context.txt
-      
-      - name: Create instructions - Code Review
-        if: steps.task_type.outputs.type == 'review'
-        run: |
-          cat <<'EOF' > instructions.txt
-          You are a helpful code review assistant. Analyze the PR changes and provide:
-          
-          1. **Summary**: Brief overview of what changed
-          2. **Key Changes**: Main modifications by file
-          3. **Potential Issues**: Any bugs, security concerns, or code quality issues
-          4. **Suggestions**: Concrete improvements
-          5. **Positive Feedback**: What was done well
-          
-          Format your response in markdown. Be constructive and specific.
-          Do not include session details or logging information.
-          
-          Context:
-          $(cat context.txt)
-          EOF
-      
-      - name: Create instructions - Test Generation
-        if: steps.task_type.outputs.type == 'test'
-        run: |
-          cat <<'EOF' > instructions.txt
-          You are a test generation assistant. Based on the changes:
-          
-          1. Identify files that need tests
-          2. Suggest test cases for new functionality
-          3. Point out edge cases to test
-          4. Recommend test improvements
-          
-          Be specific about test scenarios and provide examples where helpful.
-          Do not include session details or logging information.
-          
-          Context:
-          $(cat context.txt)
-          EOF
-      
-      - name: Create instructions - Documentation
-        if: steps.task_type.outputs.type == 'docs'
-        run: |
-          cat <<'EOF' > instructions.txt
-          You are a documentation assistant. Review the changes and:
-          
-          1. Check if code changes need documentation updates
-          2. Identify missing docstrings or comments
-          3. Suggest README or doc improvements
-          4. Note any public API changes that need documentation
-          
-          Be specific about what documentation is needed and where.
-          Do not include session details or logging information.
-          
-          Context:
-          $(cat context.txt)
-          EOF
-      
-      - name: Create instructions - Auto Fix
-        if: steps.task_type.outputs.type == 'fix'
-        run: |
-          cat <<'EOF' > instructions.txt
-          You are a code fixing assistant. Analyze the changes and:
-          
-          1. Identify obvious issues (formatting, linting, simple bugs)
-          2. Suggest specific code fixes
-          3. If possible, provide corrected code snippets
-          4. Explain what each fix addresses
-          
-          Be direct and provide actionable fixes.
-          Do not include session details or logging information.
-          
-          Context:
-          $(cat context.txt)
-          EOF
-      
-      - name: Create instructions - Issue Task
-        if: steps.task_type.outputs.type == 'issue_task'
-        run: |
-          cat <<'EOF' > instructions.txt
-          You are a helpful coding assistant. Based on the issue description:
-          
-          1. Understand the request or problem
-          2. Provide a solution or implementation plan
-          3. If code changes are needed, suggest the specific changes
-          4. Consider edge cases and potential issues
-          
-          Be clear and actionable in your response.
-          Do not include session details or logging information.
-          
-          Context:
-          $(cat context.txt)
-          EOF
-      
-      - name: Create instructions - Help
-        if: steps.task_type.outputs.type == 'help'
-        run: |
-          cat <<'EOF' > instructions.txt
-          Provide a helpful message explaining how to use the Goose agent:
-          
-          Available commands:
-          - `/goose review` - Review code changes
-          - `/goose test` - Suggest tests
-          - `/goose docs` - Check documentation
-          - `/goose fix` - Suggest fixes
-          - `/goose <your custom task>` - Run a custom task
-          
-          For PRs, you can also use labels:
-          - `goose:review` - Automatic code review
-          - `goose:test` - Test suggestions
-          - `goose:docs` - Documentation check
-          - `goose:fix` - Fix suggestions
-          
-          For issues, add the `goose:task` label to have Goose help with the task.
-          
-          Keep this response brief and friendly.
-          EOF
-      
-      - name: Create instructions - Custom Task (from comment)
-        if: steps.task_type.outputs.type == 'custom' && github.event_name == 'issue_comment'
-        run: |
-          COMMENT_BODY="${{ github.event.comment.body }}"
-          # Remove /goose prefix
-          TASK=$(echo "$COMMENT_BODY" | sed 's/^\/goose //')
-          
-          cat <<EOF > instructions.txt
-          ${TASK}
-          
-          Do not include session details or logging information.
-          
-          Context:
-          $(cat context.txt)
-          EOF
-      
-      - name: Create instructions - Custom Task (from comment)
-        if: steps.task_type.outputs.type == 'custom' && github.event_name == 'issue_comment'
-        run: |
-          COMMENT_BODY="${{ github.event.comment.body }}"
-          TASK=$(echo "$COMMENT_BODY" | sed 's/^\/goose //')
-          
-          cat <<EOF > instructions.txt
-          ${TASK}
-          
-          CRITICAL CONTEXT:
-          - You are running in a GitHub Actions CI/CD environment
-          - The repository is ALREADY checked out at: /home/runner/work/${{ github.event.repository.name }}/${{ github.event.repository.name }}
-          - Repository name: ${{ github.repository }}
-          - DO NOT use GitHub tools to clone, branch, or create PRs
-          - USE file system tools to read and modify files directly
-          - After you modify files, GitHub Actions will handle the commit and PR creation
-          
-          Available tools:
-          - File system operations (read_file, write_file, etc.)
-          - Shell commands
-          
-          $(cat context.txt)
-          EOF
+          gh pr create \
+            --title "fix: automated solution for issue #${{ steps.task.outputs.issue_number }}" \
+            --body "🦆 **Goose Agent** attempted to fix issue #${{ steps.task.outputs.issue_number }}
 
-      
-      - name: Run Goose Agent
-        run: |
-          echo "Running Goose with task type: ${{ steps.task_type.outputs.type }}"
-          
-          goose run --instructions instructions.txt \
-          --with-extension "GITHUB_PERSONAL_ACCESS_TOKEN=${{ secrets.GITHUB_TOKEN }} npx -y @modelcontextprotocol/server-github" | \
-          sed -E 's/\x1B\[[0-9;]*[mK]//g' | \
-          grep -v "logging to /home/runner/.config/goose/sessions/" | \
-          grep -v "^starting session" | \
-          grep -v "^Closing session" | \
-          sed 's/[[:space:]]*$//' \
-          > goose_output.txt
+## Changes Made
+$(cat clean_output.txt)
 
-          
-          # Add header
-          {
-            echo "## 🦆 Goose Agent Report"
-            echo ""
-            echo "**Task Type:** \`${{ steps.task_type.outputs.type }}\`"
-            echo "**Context:** \`${{ steps.context_type.outputs.context }}\`"
-            echo "**Triggered by:** @${{ github.actor }}"
-            echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-            echo ""
-            echo "---"
-            echo ""
-            cat goose_output.txt
-          } > final_output.txt
+---
+Triggered by: @${{ github.actor }}" \
+            --base main \
+            --head ${{ steps.commit.outputs.branch }}
       
-      - name: Post comment to PR
-        if: steps.context_type.outputs.context == 'pr' || steps.context_type.outputs.context == 'pr_comment'
-        run: |
-          gh pr comment ${{ steps.context_type.outputs.number }} --body-file final_output.txt
-      
-      - name: Post comment to Issue
-        if: steps.context_type.outputs.context == 'issue' || steps.context_type.outputs.context == 'issue_comment'
-        run: |
-          gh issue comment ${{ steps.context_type.outputs.number }} --body-file final_output.txt
-      
-      - name: Create summary
-        run: |
-          cat final_output.txt >> $GITHUB_STEP_SUMMARY
-      
-      - name: Upload artifacts
+      - name: Comment on issue
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: goose-output-${{ github.run_number }}
-          path: |
-            goose_output.txt
-            final_output.txt
-            context.txt
-            instructions.txt
-          retention-days: 30
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ steps.commit.outputs.changes }}" == "true" ]; then
+            COMMENT="✅ **Goose completed the task!**
+
+I've created a PR with my changes. Please review.
+
+<details>
+<summary>Output</summary>
+
+\`\`\`
+$(cat clean_output.txt)
+\`\`\`
+</details>"
+          else
+            COMMENT="ℹ️ **Goose analyzed the task**
+
+$(cat clean_output.txt)"
+          fi
+          
+          gh issue comment ${{ steps.task.outputs.issue_number }} --body "$COMMENT"
