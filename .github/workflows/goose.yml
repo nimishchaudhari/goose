@@ -29,7 +29,7 @@ permissions:
 env:
   # Configure your LLM provider
   PROVIDER_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-  GOOSE_PROVIDER: openai
+  GOOSE_PROVIDER: openai-compatible
   GOOSE_MODEL: ${{ secrets.OPENAI_MODEL }}
   GOOSE_DISABLE_KEYRING: 1
   
