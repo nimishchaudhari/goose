@@ -1,0 +1,15 @@
+    working directory: /home/runner/work/goose/goose
+I'll help you create a pull request for the repository `nimishchaudhari/goose`. Since we're in a GitHub Actions runner with the repository checked out, I'll need to:
+
+1. Identify what needs to be fixed
+2. Make the necessary code changes
+3. Commit the changes
+4. Create a pull request
+
+However, I notice you haven't specified what exactly needs to be fixed. Could you please clarify:
+
+- What is the bug or issue that needs fixing?
+- Are there any specific code changes that should be made?
+- What should the pull request title and description be?
+
+Without more details about the fix, I can't proceed with creating the PR. Please provide more information about the issue you want to address.
