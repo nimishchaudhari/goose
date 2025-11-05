@@ -342,14 +342,30 @@ jobs:
           $(cat context.txt)
           EOF
       
-      - name: Create instructions - Custom Task (from workflow dispatch)
-        if: steps.task_type.outputs.type == 'custom' && github.event_name == 'workflow_dispatch'
+      - name: Create instructions - Custom Task (from comment)
+        if: steps.task_type.outputs.type == 'custom' && github.event_name == 'issue_comment'
         run: |
-          cat <<'EOF' > instructions.txt
-          ${{ github.event.inputs.task }}
+          COMMENT_BODY="${{ github.event.comment.body }}"
+          TASK=$(echo "$COMMENT_BODY" | sed 's/^\/goose //')
           
-          Do not include session details or logging information.
+          cat <<EOF > instructions.txt
+          ${TASK}
+          
+          CRITICAL CONTEXT:
+          - You are running in a GitHub Actions CI/CD environment
+          - The repository is ALREADY checked out at: /home/runner/work/${{ github.event.repository.name }}/${{ github.event.repository.name }}
+          - Repository name: ${{ github.repository }}
+          - DO NOT use GitHub tools to clone, branch, or create PRs
+          - USE file system tools to read and modify files directly
+          - After you modify files, GitHub Actions will handle the commit and PR creation
+          
+          Available tools:
+          - File system operations (read_file, write_file, etc.)
+          - Shell commands
+          
+          $(cat context.txt)
           EOF
+
       
       - name: Run Goose Agent
         run: |
