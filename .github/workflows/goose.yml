@@ -22,8 +22,9 @@ permissions:
 
 env:
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-  OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+  OPENAI_HOST: ${{ secrets.OPENAI_HOST }}
   OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+  OPENAI_BASE_PATH: v1/chat/completions
   GH_TOKEN: ${{ github.token }}
 
 jobs:
@@ -124,8 +125,9 @@ jobs:
             > goose_output.txt
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_HOST: ${{ secrets.OPENAI_HOST }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          OPENAI_BASE_PATH: v1/chat/completions
       
       - name: Post comment to issue/PR
         if: github.event_name == 'issue_comment' || (github.event_name == 'issues' && github.event.action == 'labeled')
