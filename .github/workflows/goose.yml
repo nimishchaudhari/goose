@@ -1,19 +1,17 @@
-name: Goose Do It
-
+name: Goose Agent
 on:
-  issues:
-    types:
-      - labeled
-      - opened
-  issue_comment:
-    types:
-      - created
   pull_request:
-    types:
-      - labeled
-      - opened
-      - synchronize
-      - reopened
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Task for Goose to execute'
+        required: true
+        type: string
+      pr_number:
+        description: 'PR number (optional)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -21,27 +19,30 @@ permissions:
   issues: write
 
 env:
-  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-  OPENAI_HOST: ${{ secrets.OPENAI_HOST }}
-  OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-  OPENAI_BASE_PATH: v1/chat/completions
+  # Configure your LLM provider
+  PROVIDER_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # or ANTHROPIC_API_KEY, etc.
+  GOOSE_PROVIDER: openai  # or anthropic, openrouter, etc.
+  GOOSE_MODEL: ${{ secrets.OPENAI_MODEL }}  # or claude-3-5-sonnet-20241022, etc.
+  
+  # GitHub context
+  PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
   GH_TOKEN: ${{ github.token }}
+  REPO_NAME: ${{ github.repository }}
+  
+  # Custom endpoints (if using custom models)
+  CUSTOM_API_ENDPOINT: ${{ secrets.OPENAI_HOST }}
 
 jobs:
-  goose-resolve:
-    name: Goose Resolver
+  goose-agent:
+    name: Goose Agent
     runs-on: ubuntu-latest
     
-    if: |
-      (github.event.label.name == 'goose') ||
-      (github.event.issue.pull_request && contains(github.event.comment.body, '@goose-ai')) ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@goose-ai') && !github.event.issue.pull_request)
-    
     steps:
-      - name: Checkout repo
+      - name: Check out repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
       
       - name: Install Goose CLI
         run: |
@@ -54,68 +55,145 @@ jobs:
         run: |
           mkdir -p ~/.config/goose
           cat <<EOF > ~/.config/goose/config.yaml
-          GOOSE_PROVIDER: openai
-          GOOSE_MODEL: ${{ env.OPENAI_MODEL }}
+          GOOSE_PROVIDER: ${{ env.GOOSE_PROVIDER }}
+          GOOSE_MODEL: ${{ env.GOOSE_MODEL }}
           keyring: false
           EOF
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
-          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          
+          # If using custom endpoint, add it to config
+          if [ ! -z "${{ env.CUSTOM_API_ENDPOINT }}" ]; then
+            echo "GOOSE_API_ENDPOINT: ${{ env.CUSTOM_API_ENDPOINT }}" >> ~/.config/goose/config.yaml
+          fi
       
-      - name: Prepare context for issues
-        if: github.event_name == 'issues' || (github.event_name == 'issue_comment' && !github.event.issue.pull_request)
+      - name: Determine task type
+        id: task_type
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "type=custom" >> $GITHUB_OUTPUT
+            echo "Custom task triggered"
+          elif [ ! -z "${{ env.PR_NUMBER }}" ]; then
+            # Check for labels to determine task
+            LABELS=$(gh pr view ${{ env.PR_NUMBER }} --json labels -q '.labels[].name' || echo "")
+            
+            if echo "$LABELS" | grep -q "goose:review"; then
+              echo "type=review" >> $GITHUB_OUTPUT
+            elif echo "$LABELS" | grep -q "goose:test"; then
+              echo "type=test" >> $GITHUB_OUTPUT
+            elif echo "$LABELS" | grep -q "goose:docs"; then
+              echo "type=docs" >> $GITHUB_OUTPUT
+            elif echo "$LABELS" | grep -q "goose:fix"; then
+              echo "type=fix" >> $GITHUB_OUTPUT
+            else
+              echo "type=review" >> $GITHUB_OUTPUT  # default
+            fi
+          else
+            echo "type=review" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Gather PR information
+        if: env.PR_NUMBER != ''
         run: |
           {
-            echo "# Issue: ${{ github.event.issue.title }}"
+            echo "# Pull Request #${{ env.PR_NUMBER }}"
             echo ""
-            echo "${{ github.event.issue.body }}"
+            echo "## PR Details"
+            gh pr view ${{ env.PR_NUMBER }} --json title,body,author \
+              -q '"**Title:** " + .title + "\n**Author:** " + .author.login + "\n**Description:**\n" + .body'
             echo ""
-            echo "[Link to issue](${{ github.event.issue.html_url }})"
-          } > context.txt
-      
-      - name: Prepare context for PRs
-        if: github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && github.event.issue.pull_request)
-        run: |
-          {
-            echo "# Pull Request: ${{ github.event.pull_request.title }}"
-            echo ""
-            echo "${{ github.event.pull_request.body }}"
-            echo ""
-            gh pr view ${{ github.event.pull_request.number }} --json files \
+            echo "## Files Changed"
+            gh pr view ${{ env.PR_NUMBER }} --json files \
               -q '.files[] | "* " + .path + " (" + (.additions|tostring) + " additions, " + (.deletions|tostring) + " deletions)"'
             echo ""
-            echo "## Changes Summary"
-            gh pr diff ${{ github.event.pull_request.number }}"
-            echo ""
-            echo "[Link to PR](${{ github.event.pull_request.html_url }})"
-          } > context.txt
+            echo "## Diff"
+            gh pr diff ${{ env.PR_NUMBER }}
+          } > pr_context.txt
       
-      - name: Create instructions for Goose
+      - name: Create instructions - Code Review
+        if: steps.task_type.outputs.type == 'review'
         run: |
-          TASK="${{ github.event.issue.title || github.event.pull_request.title }}"
-          COMMENT_BODY="${{ github.event.comment.body || '' }}"
+          cat <<'EOF' > instructions.txt
+          You are a helpful code review assistant. Analyze the PR changes and provide:
           
-          cat <<EOF > instructions.txt
-          You are a GitHub resolver assistant helping to fix issues or review pull requests.
+          1. **Summary**: Brief overview of what changed
+          2. **Key Changes**: Main modifications by file
+          3. **Potential Issues**: Any bugs, security concerns, or code quality issues
+          4. **Suggestions**: Concrete improvements
+          5. **Positive Feedback**: What was done well
           
-          Task: $TASK
+          Format your response in markdown. Be constructive and specific.
+          Do not include session details or logging information.
           
-          Comment context (if any): $COMMENT_BODY
-          
-          Please analyze the provided context and:
-          1. Understand the issue or PR requirement
-          2. If it's a code issue, propose fixes or improvements
-          3. If it's a question, provide a detailed answer
-          4. Be concise but thorough
-          5. Provide actionable suggestions
-          
-          Context:
-          $(cat context.txt)
+          PR Information:
+          $(cat pr_context.txt)
           EOF
       
-      - name: Run Goose and filter output
+      - name: Create instructions - Test Generation
+        if: steps.task_type.outputs.type == 'test'
         run: |
+          cat <<'EOF' > instructions.txt
+          You are a test generation assistant. Based on the PR changes:
+          
+          1. Identify files that need tests
+          2. Suggest test cases for new functionality
+          3. Point out edge cases to test
+          4. Recommend test improvements
+          
+          Be specific about test scenarios and provide examples where helpful.
+          Do not include session details or logging information.
+          
+          PR Information:
+          $(cat pr_context.txt)
+          EOF
+      
+      - name: Create instructions - Documentation
+        if: steps.task_type.outputs.type == 'docs'
+        run: |
+          cat <<'EOF' > instructions.txt
+          You are a documentation assistant. Review the PR and:
+          
+          1. Check if code changes need documentation updates
+          2. Identify missing docstrings or comments
+          3. Suggest README or doc improvements
+          4. Note any public API changes that need documentation
+          
+          Be specific about what documentation is needed and where.
+          Do not include session details or logging information.
+          
+          PR Information:
+          $(cat pr_context.txt)
+          EOF
+      
+      - name: Create instructions - Auto Fix
+        if: steps.task_type.outputs.type == 'fix'
+        run: |
+          cat <<'EOF' > instructions.txt
+          You are a code fixing assistant. Analyze the PR and:
+          
+          1. Identify obvious issues (formatting, linting, simple bugs)
+          2. Suggest specific code fixes
+          3. If possible, provide corrected code snippets
+          4. Explain what each fix addresses
+          
+          Be direct and provide actionable fixes.
+          Do not include session details or logging information.
+          
+          PR Information:
+          $(cat pr_context.txt)
+          EOF
+      
+      - name: Create instructions - Custom Task
+        if: steps.task_type.outputs.type == 'custom'
+        run: |
+          cat <<'EOF' > instructions.txt
+          ${{ github.event.inputs.task }}
+          
+          Do not include session details or logging information.
+          EOF
+      
+      - name: Run Goose Agent
+        run: |
+          echo "Running Goose with task type: ${{ steps.task_type.outputs.type }}"
+          
           goose run --instructions instructions.txt | \
             sed -E 's/\x1B\[[0-9;]*[mK]//g' | \
             grep -v "logging to /home/runner/.config/goose/sessions/" | \
@@ -123,23 +201,37 @@ jobs:
             grep -v "^Closing session" | \
             sed 's/[[:space:]]*$//' \
             > goose_output.txt
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_HOST: ${{ secrets.OPENAI_HOST }}
-          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
-          OPENAI_BASE_PATH: v1/chat/completions
-      
-      - name: Post comment to issue/PR
-        if: github.event_name == 'issue_comment' || (github.event_name == 'issues' && github.event.action == 'labeled')
-        run: |
-          gh issue comment ${{ github.event.issue.number }} \
-            --body-file goose_output.txt \
-            -R ${{ github.repository }}
+          
+          # Add task type header
+          {
+            echo "## 🦆 Goose Agent Report"
+            echo ""
+            echo "**Task Type:** \`${{ steps.task_type.outputs.type }}\`"
+            echo "**Triggered by:** ${{ github.actor }}"
+            echo "**Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+            echo ""
+            echo "---"
+            echo ""
+            cat goose_output.txt
+          } > final_output.txt
       
       - name: Post comment to PR
-        if: github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && github.event.issue.pull_request)
+        if: env.PR_NUMBER != ''
         run: |
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body-file goose_output.txt \
-            -R ${{ github.repository }}
-            
+          gh pr comment ${{ env.PR_NUMBER }} --body-file final_output.txt
+      
+      - name: Create summary
+        run: |
+          cat final_output.txt >> $GITHUB_STEP_SUMMARY
+      
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goose-output
+          path: |
+            goose_output.txt
+            final_output.txt
+            pr_context.txt
+            instructions.txt
+          retention-days: 30
