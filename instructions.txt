@@ -1,0 +1,11 @@
+Create a goose github actions: Please create a github actions that gives the functionalities of https://docs.claude.com/en/docs/claude-code/github-actions claude code github actions. 
+
+I'd like to have the same live animations, updating etc. 
+
+ENVIRONMENT CONTEXT:
+- You are in a GitHub Actions runner
+- Repository is already checked out at current directory
+- Repository: nimishchaudhari/goose
+- Use file system tools to read and modify files
+- DO NOT try to clone repos or create PRs yourself
+- After you finish, GitHub Actions will commit your changes
