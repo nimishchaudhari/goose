@@ -99,9 +99,8 @@ jobs:
             git checkout -b $BRANCH
             git add .
             git commit -m "fix: address issue #${{ steps.task.outputs.issue_number }}
-
-Automated fix by Goose Agent
-Triggered by: @${{ github.actor }}"
+            Automated fix by Goose Agent
+            Triggered by: @${{ github.actor }}"
             git push origin $BRANCH
             
             echo "branch=$BRANCH" >> $GITHUB_OUTPUT
